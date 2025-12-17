@@ -157,13 +157,47 @@ class ColorConverterPlugin(Star):
         
         return ""
     
+    def _get_message_type(self, event: AstrMessageEvent) -> str:
+        """获取消息类型"""
+        try:
+            # 方法1: 使用get_message_type()方法
+            if hasattr(event, 'get_message_type'):
+                message_type = event.get_message_type()
+                if message_type:
+                    return str(message_type)
+            
+            # 方法2: 使用message_type属性
+            if hasattr(event, 'message_type'):
+                return str(event.message_type)
+            
+            # 方法3: 从原始数据中获取
+            if hasattr(event, 'data') and isinstance(event.data, dict):
+                message_type = event.data.get('message_type')
+                if message_type:
+                    return str(message_type)
+            
+            # 方法4: 从raw_event中获取
+            if hasattr(event, 'raw_event') and isinstance(event.raw_event, dict):
+                message_type = event.raw_event.get('message_type')
+                if message_type:
+                    return str(message_type)
+                
+        except Exception as e:
+            logger.warning(f"获取消息类型时发生错误: {e}")
+        
+        # 默认返回空字符串
+        return ""
+    
     def _check_permission(self, event: AstrMessageEvent) -> tuple[bool, str]:
         """
         检查用户是否有权限使用插件
         返回: (是否允许, 错误信息)
         """
+        # 获取消息类型
+        message_type = self._get_message_type(event)
+        
         # 如果是私聊，检查私聊白名单
-        if event.message_type == "private":
+        if message_type == "private":
             if not self.private_whitelist:
                 # 如果没有设置白名单，默认允许
                 return True, ""
@@ -176,7 +210,7 @@ class ColorConverterPlugin(Star):
                 return False, "您不在私聊白名单中，无法使用此功能"
         
         # 如果是群聊，检查群聊白名单
-        elif event.message_type == "group":
+        elif message_type == "group":
             if not self.group_whitelist:
                 # 如果没有设置白名单，默认允许
                 return True, ""
@@ -527,6 +561,8 @@ class ColorConverterPlugin(Star):
                 raw_message = event.plain_text
             elif hasattr(event, 'message_obj') and hasattr(event.message_obj, 'extract_plain_text'):
                 raw_message = event.message_obj.extract_plain_text()
+            elif hasattr(event, 'get_message_str'):
+                raw_message = event.get_message_str()
         except Exception as e:
             logger.warning(f"获取原始消息时出错: {e}")
             yield event.plain_result("获取消息时出错，请重试")
