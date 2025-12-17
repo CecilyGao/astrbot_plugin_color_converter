@@ -1,14 +1,7 @@
 import re
-import math
-import time
-import aiohttp
-import asyncio
-import astrbot.api.message_components as Comp
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger, AstrBotConfig
-from astrbot.core.utils.session_waiter import session_waiter, SessionController
-from collections import defaultdict
 
 @register(
     "ColorConverter",
@@ -20,7 +13,8 @@ from collections import defaultdict
 class ColorConverterPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
-        self.config = config
+        # 确保config不为None
+        self.config = config or {}
         
         # 初始化白名单
         self.private_whitelist = set()
@@ -54,28 +48,27 @@ class ColorConverterPlugin(Star):
         """加载配置文件"""
         try:
             # 私聊白名单
-            if self.config and hasattr(self.config, 'get'):
-                private_list = self.config.get('private_whitelist', [])
-                if isinstance(private_list, list):
-                    self.private_whitelist = set(map(str, private_list))
-                    logger.info(f"私聊白名单加载: {len(self.private_whitelist)}个用户")
-                else:
-                    logger.warning(f"私聊白名单配置格式错误，期望列表类型，实际: {type(private_list)}")
-                    self.private_whitelist = set()
-                
-                # 群聊白名单
-                group_list = self.config.get('group_whitelist', [])
-                if isinstance(group_list, list):
-                    self.group_whitelist = set(map(str, group_list))
-                    logger.info(f"群聊白名单加载: {len(self.group_whitelist)}个群组")
-                else:
-                    logger.warning(f"群聊白名单配置格式错误，期望列表类型，实际: {type(group_list)}")
-                    self.group_whitelist = set()
-                
-                if not self.private_whitelist and not self.group_whitelist:
-                    logger.info("未配置白名单，插件将对所有用户和群组开放")
-                else:
-                    logger.info(f"颜色转换插件配置已加载: 私聊白名单{len(self.private_whitelist)}个, 群聊白名单{len(self.group_whitelist)}个")
+            private_list = self.config.get('private_whitelist', [])
+            if isinstance(private_list, list):
+                self.private_whitelist = set(map(str, private_list))
+                logger.info(f"私聊白名单加载: {len(self.private_whitelist)}个用户")
+            else:
+                logger.warning(f"私聊白名单配置格式错误，期望列表类型，实际: {type(private_list)}")
+                self.private_whitelist = set()
+            
+            # 群聊白名单
+            group_list = self.config.get('group_whitelist', [])
+            if isinstance(group_list, list):
+                self.group_whitelist = set(map(str, group_list))
+                logger.info(f"群聊白名单加载: {len(self.group_whitelist)}个群组")
+            else:
+                logger.warning(f"群聊白名单配置格式错误，期望列表类型，实际: {type(group_list)}")
+                self.group_whitelist = set()
+            
+            if not self.private_whitelist and not self.group_whitelist:
+                logger.info("未配置白名单，插件将对所有用户和群组开放")
+            else:
+                logger.info(f"颜色转换插件配置已加载: 私聊白名单{len(self.private_whitelist)}个, 群聊白名单{len(self.group_whitelist)}个")
                 
         except Exception as e:
             logger.error(f"加载配置时发生错误: {e}")
@@ -85,108 +78,31 @@ class ColorConverterPlugin(Star):
             logger.info("使用默认空白名单配置")
     
     def _get_user_id(self, event: AstrMessageEvent) -> str:
-        """从事件中获取用户ID"""
+        """从事件中获取用户ID - 使用标准API"""
         try:
-            # 方法1: 优先使用get_sender_id()方法（参考main.py）
-            if hasattr(event, 'get_sender_id'):
-                user_id = event.get_sender_id()
-                if user_id:
-                    return str(user_id)
-            
-            # 方法2: 使用user_id属性
-            if hasattr(event, 'user_id'):
-                return str(event.user_id)
-            
-            # 方法3: 从sender对象获取
-            if hasattr(event, 'sender') and hasattr(event.sender, 'user_id'):
-                return str(event.sender.user_id)
-            
-            # 方法4: 从原始数据中获取
-            if hasattr(event, 'data') and isinstance(event.data, dict):
-                user_id = event.data.get('user_id')
-                if user_id:
-                    return str(user_id)
-            
-            # 方法5: 从raw_event中获取
-            if hasattr(event, 'raw_event') and isinstance(event.raw_event, dict):
-                user_id = event.raw_event.get('user_id')
-                if user_id:
-                    return str(user_id)
-            
-            # 方法6: 尝试获取user对象
-            if hasattr(event, 'user') and hasattr(event.user, 'user_id'):
-                return str(event.user.user_id)
-                
+            user_id = event.get_sender_id()
+            return str(user_id) if user_id else ""
         except Exception as e:
             logger.warning(f"获取用户ID时发生错误: {e}")
-        
-        logger.warning(f"无法从事件中获取用户ID: {event}")
-        return ""
+            return ""
     
     def _get_group_id(self, event: AstrMessageEvent) -> str:
-        """从事件中获取群组ID"""
+        """从事件中获取群组ID - 使用标准API"""
         try:
-            # 方法1: 优先使用get_group_id()方法（参考main.py）
-            if hasattr(event, 'get_group_id'):
-                group_id = event.get_group_id()
-                if group_id:
-                    return str(group_id)
-            
-            # 方法2: 使用group_id属性
-            if hasattr(event, 'group_id'):
-                return str(event.group_id)
-            
-            # 方法3: 从group对象获取
-            if hasattr(event, 'group') and hasattr(event.group, 'group_id'):
-                return str(event.group.group_id)
-            
-            # 方法4: 从原始数据中获取
-            if hasattr(event, 'data') and isinstance(event.data, dict):
-                group_id = event.data.get('group_id')
-                if group_id:
-                    return str(group_id)
-            
-            # 方法5: 从raw_event中获取
-            if hasattr(event, 'raw_event') and isinstance(event.raw_event, dict):
-                group_id = event.raw_event.get('group_id')
-                if group_id:
-                    return str(group_id)
-                
+            group_id = event.get_group_id()
+            return str(group_id) if group_id else ""
         except Exception as e:
             logger.warning(f"获取群组ID时发生错误: {e}")
-        
-        return ""
+            return ""
     
     def _get_message_type(self, event: AstrMessageEvent) -> str:
-        """获取消息类型"""
+        """获取消息类型 - 使用标准API"""
         try:
-            # 方法1: 使用get_message_type()方法
-            if hasattr(event, 'get_message_type'):
-                message_type = event.get_message_type()
-                if message_type:
-                    return str(message_type)
-            
-            # 方法2: 使用message_type属性
-            if hasattr(event, 'message_type'):
-                return str(event.message_type)
-            
-            # 方法3: 从原始数据中获取
-            if hasattr(event, 'data') and isinstance(event.data, dict):
-                message_type = event.data.get('message_type')
-                if message_type:
-                    return str(message_type)
-            
-            # 方法4: 从raw_event中获取
-            if hasattr(event, 'raw_event') and isinstance(event.raw_event, dict):
-                message_type = event.raw_event.get('message_type')
-                if message_type:
-                    return str(message_type)
-                
+            message_type = event.get_message_type()
+            return str(message_type) if message_type else ""
         except Exception as e:
             logger.warning(f"获取消息类型时发生错误: {e}")
-        
-        # 默认返回空字符串
-        return ""
+            return ""
     
     def _check_permission(self, event: AstrMessageEvent) -> tuple[bool, str]:
         """
@@ -288,7 +204,8 @@ class ColorConverterPlugin(Star):
         # 计算CMYK
         k = 1 - max(r_prime, g_prime, b_prime)
         
-        if abs(k - 1.0) < 0.000001:  # 纯黑色（考虑浮点误差）
+        # 使用更清晰的方式检查纯黑色
+        if k > 0.999999:  # 接近1.0时视为纯黑色
             c = m = y = 0.0
         else:
             c = (1 - r_prime - k) / (1 - k)
@@ -552,17 +469,11 @@ class ColorConverterPlugin(Star):
         # 获取原始消息
         raw_message = ""
         try:
-            # 尝试从不同属性中获取原始消息
-            if hasattr(event, 'raw_message'):
-                raw_message = event.raw_message
-            elif hasattr(event, 'message') and hasattr(event.message, 'extract_plain_text'):
-                raw_message = event.message.extract_plain_text()
-            elif hasattr(event, 'plain_text'):
-                raw_message = event.plain_text
-            elif hasattr(event, 'message_obj') and hasattr(event.message_obj, 'extract_plain_text'):
-                raw_message = event.message_obj.extract_plain_text()
-            elif hasattr(event, 'get_message_str'):
+            # 优先使用标准API获取消息
+            if hasattr(event, 'get_message_str'):
                 raw_message = event.get_message_str()
+            elif hasattr(event, 'raw_message'):
+                raw_message = event.raw_message
         except Exception as e:
             logger.warning(f"获取原始消息时出错: {e}")
             yield event.plain_result("获取消息时出错，请重试")
