@@ -1,6 +1,6 @@
 import re
 import aiohttp
-from PIL import Image
+from PIL import Image, ImageDraw
 from io import BytesIO
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
@@ -118,6 +118,35 @@ class ColorConverterPlugin(Star):
         except Exception as e:
             logger.error(f"下载图片时发生错误: {e}")
             return None
+    
+    def _create_color_preview_image(self, r: int, g: int, b: int) -> BytesIO:
+        """创建颜色预览小图"""
+        # 创建100x100的图片
+        size = 100
+        image = Image.new('RGB', (size, size), (r, g, b))
+        
+        # 添加边框
+        draw = ImageDraw.Draw(image)
+        border_width = 2
+        draw.rectangle(
+            [0, 0, size-1, size-1],
+            outline=(200, 200, 200),
+            width=border_width
+        )
+        
+        # 添加文本标签
+        draw.text(
+            (size//2, size//2),
+            f"#{r:02x}{g:02x}{b:02x}".upper(),
+            fill=(255, 255, 255) if (r*0.299 + g*0.587 + b*0.114) < 128 else (0, 0, 0),
+            anchor="mm"
+        )
+        
+        # 转换为BytesIO
+        bio = BytesIO()
+        image.save(bio, format='PNG')
+        bio.seek(0)
+        return bio
     
     def _load_config(self):
         """加载配置文件"""
@@ -578,8 +607,8 @@ class ColorConverterPlugin(Star):
             logger.error(f"取色时发生错误: {e}", exc_info=True)
             return {}, f"取色时发生错误: {str(e)}"
     
-    def _format_pick_output(self, color_info: dict) -> str:
-        """格式化取色器输出"""
+    def _format_pick_output(self, color_info: dict) -> tuple[str, BytesIO]:
+        """格式化取色器输出，返回文本和预览图片"""
         output = []
         
         # 基本信息
@@ -601,12 +630,11 @@ class ColorConverterPlugin(Star):
             c, m, y, k = color_info['cmyk']
             output.append(f"CMYK: CMYK({c}%, {m}%, {y}%, {k}%)")
         
-        # 颜色预览（使用文本表示）
-        hex_color = color_info.get('hex', '#000000')
-        output.append("")
-        output.append(f"颜色预览: {hex_color}")
+        # 生成颜色预览图片
+        r, g, b = color_info['rgb']
+        preview_image = self._create_color_preview_image(r, g, b)
         
-        return "\n".join(output)
+        return "\n".join(output), preview_image
     
     @filter.command("color")
     async def color_converter(self, event: AstrMessageEvent):
@@ -691,9 +719,17 @@ class ColorConverterPlugin(Star):
                 yield event.plain_result(error_msg)
                 return
             
-            # 格式化输出
-            output = self._format_pick_output(color_info)
-            yield event.plain_result(output)
+            # 格式化输出并生成预览图片
+            text_output, preview_image = self._format_pick_output(color_info)
+            
+            # 使用消息链发送文本和图片
+            chain = [
+                Comp.Plain(text_output),
+                Comp.Plain("\n颜色预览:\n"),
+                Comp.Image.fromBytes(preview_image.getvalue())
+            ]
+            
+            yield event.chain_result(chain)
             return
         
         # 处理传统的颜色转换命令
