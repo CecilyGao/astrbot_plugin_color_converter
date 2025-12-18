@@ -1,6 +1,6 @@
 name: astrbot_plugin_color_converter
-display_name: 颜色格式转换器
-desc: 实现RGB、CMYK、16进制颜色格式互转
-version: v1.0.0
+display_name: 颜色转换器
+desc: 实现RGB/CMYK/16进制颜色格式互转、图片坐标取色等功能
+version: v1.0.1
 author: CecilyGao
 repo: https://github.com/CecilyGao/astrbot_plugin_color_converter
