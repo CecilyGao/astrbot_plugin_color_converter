@@ -1,13 +1,18 @@
 import re
+import aiohttp
+from PIL import Image
+from io import BytesIO
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger, AstrBotConfig
+import astrbot.api.message_components as Comp
+from astrbot.api.message_components import Reply, Image as ImgComponent
 
 @register(
     "ColorConverter",
     "CecilyGao",
-    "实现RGB、CMYK、16进制颜色值的相互转换",
-    "1.0.0",
+    "实现RGB、CMYK、16进制颜色值的相互转换，以及图片取色功能",
+    "1.1.0",
     "https://github.com/CecilyGao/astrbot_plugin_color_converter"
 )
 class ColorConverterPlugin(Star):
@@ -20,10 +25,13 @@ class ColorConverterPlugin(Star):
         self.private_whitelist = set()
         self.group_whitelist = set()
         
+        # 初始化HTTP会话
+        self.session = None
+        
         # 加载配置
         self._load_config()
         
-        # 帮助信息
+        # 更新帮助信息，包含取色器功能
         self.help_text = (
             "=== 颜色值转换插件帮助 ===\n"
             "【命令格式】color <目标格式> <颜色值>\n"
@@ -41,8 +49,75 @@ class ColorConverterPlugin(Star):
             "   - CMYK: 4个0-100的数字，用逗号分隔\n"
             "      示例: 0,100,100,0 (红色)\n\n"
             
+            "【取色器命令】\n"
+            "命令格式: color pick <坐标> （需要引用一张图片）\n"
+            "  » 示例: （引用一张3840*2160图片）color pick 1490,532\n"
+            "  说明: 引用一张图片，回复该图片上指定坐标(x,y)的颜色值\n"
+            "  坐标格式: x,y (例如: 1490,532)\n\n"
+            
             "【帮助命令】colorhelp：显示此帮助信息"
         )
+    
+    async def _ensure_session(self):
+        """确保HTTP会话已创建"""
+        if self.session is None:
+            self.session = aiohttp.ClientSession()
+    
+    async def _get_image_from_event(self, event: AstrMessageEvent) -> bytes | None:
+        """
+        从事件中获取图片
+        参考main1.py的处理方式
+        """
+        img_bytes_list = []
+        
+        # 检查消息中的每个组件
+        for seg in event.message_obj.message:
+            # 处理回复消息中的图片
+            if isinstance(seg, Reply) and seg.chain:
+                for s_chain in seg.chain:
+                    if isinstance(s_chain, ImgComponent):
+                        # 优先使用url，如果url不存在则使用file
+                        if s_chain.url:
+                            img_bytes = await self._download_image(s_chain.url)
+                            if img_bytes:
+                                img_bytes_list.append(img_bytes)
+                        elif s_chain.file:
+                            # 如果是本地文件，读取文件
+                            try:
+                                with open(s_chain.file, 'rb') as f:
+                                    img_bytes_list.append(f.read())
+                            except Exception as e:
+                                logger.error(f"读取图片文件失败: {e}")
+            
+            # 处理当前消息中的图片
+            elif isinstance(seg, ImgComponent):
+                if seg.url:
+                    img_bytes = await self._download_image(seg.url)
+                    if img_bytes:
+                        img_bytes_list.append(img_bytes)
+                elif seg.file:
+                    try:
+                        with open(seg.file, 'rb') as f:
+                            img_bytes_list.append(f.read())
+                    except Exception as e:
+                        logger.error(f"读取图片文件失败: {e}")
+        
+        # 返回第一张图片，如果没有图片则返回None
+        return img_bytes_list[0] if img_bytes_list else None
+    
+    async def _download_image(self, url: str) -> bytes | None:
+        """下载图片"""
+        await self._ensure_session()
+        try:
+            async with self.session.get(url, timeout=30) as resp:
+                if resp.status == 200:
+                    return await resp.read()
+                else:
+                    logger.warning(f"无法下载图片 (状态: {resp.status}) URL: {url}")
+                    return None
+        except Exception as e:
+            logger.error(f"下载图片时发生错误: {e}")
+            return None
     
     def _load_config(self):
         """加载配置文件"""
@@ -451,6 +526,88 @@ class ColorConverterPlugin(Star):
         
         return "\n".join(output)
     
+    async def _pick_color_from_image(self, image_bytes: bytes, coord_str: str) -> tuple[dict, str]:
+        """
+        从图片中拾取颜色
+        返回: (颜色信息字典, 错误信息)
+        """
+        try:
+            # 解析坐标
+            coord_str = coord_str.strip().replace('，', ',')  # 中文逗号转英文逗号
+            coord_parts = coord_str.split(',')
+            
+            if len(coord_parts) != 2:
+                return {}, "坐标格式错误，请输入 x,y 格式的坐标（例如: 1490,532）"
+            
+            try:
+                x = int(coord_parts[0].strip())
+                y = int(coord_parts[1].strip())
+            except ValueError:
+                return {}, "坐标必须是整数"
+            
+            # 加载图片
+            image = Image.open(BytesIO(image_bytes)).convert('RGB')
+            width, height = image.size
+            
+            # 检查坐标是否在图片范围内
+            if x < 0 or x >= width or y < 0 or y >= height:
+                return {}, f"坐标 ({x},{y}) 超出图片范围 (图片尺寸: {width}x{height})"
+            
+            # 获取颜色
+            pixel = image.getpixel((x, y))
+            r, g, b = pixel
+            
+            # 转换为各种格式
+            hex_color, error = self.rgb_to_hex(r, g, b)
+            if error:
+                return {}, error
+            
+            cmyk, error = self.rgb_to_cmyk(r, g, b)
+            if error:
+                return {}, error
+            
+            return {
+                'hex': hex_color,
+                'rgb': (r, g, b),
+                'cmyk': cmyk,
+                '_image_size': (width, height),
+                '_coord': (x, y)
+            }, ""
+            
+        except Exception as e:
+            logger.error(f"取色时发生错误: {e}", exc_info=True)
+            return {}, f"取色时发生错误: {str(e)}"
+    
+    def _format_pick_output(self, color_info: dict) -> str:
+        """格式化取色器输出"""
+        output = []
+        
+        # 基本信息
+        x, y = color_info.get('_coord', (0, 0))
+        width, height = color_info.get('_image_size', (0, 0))
+        
+        output.append(f"图片取色结果 (图片尺寸: {width}x{height}, 坐标: ({x},{y}))")
+        output.append("")
+        
+        # 颜色值
+        if color_info.get('hex'):
+            output.append(f"16进制: {color_info['hex']}")
+        
+        if color_info.get('rgb'):
+            r, g, b = color_info['rgb']
+            output.append(f"RGB: RGB({r}, {g}, {b})")
+        
+        if color_info.get('cmyk'):
+            c, m, y, k = color_info['cmyk']
+            output.append(f"CMYK: CMYK({c}%, {m}%, {y}%, {k}%)")
+        
+        # 颜色预览（使用文本表示）
+        hex_color = color_info.get('hex', '#000000')
+        output.append("")
+        output.append(f"颜色预览: {hex_color} ██████████████")
+        
+        return "\n".join(output)
+    
     @filter.command("color")
     async def color_converter(self, event: AstrMessageEvent):
         """
@@ -498,22 +655,56 @@ class ColorConverterPlugin(Star):
             return
         
         # 解析内容
-        parts = content.strip().split(maxsplit=1)
+        parts = content.strip().split(maxsplit=2)  # 修改为maxsplit=2以支持pick命令
         
         if len(parts) < 2:
             # 只有一个参数或没有参数
             if parts:
                 # 只有一个参数，可能是格式错误
-                if parts[0].lower() in ['rgb', 'hex', 'cmyk']:
-                    yield event.plain_result(f"错误：请提供颜色值\n\n示例: color {parts[0]} 72C0FF")
+                if parts[0].lower() in ['rgb', 'hex', 'cmyk', 'pick']:
+                    yield event.plain_result(f"错误：请提供颜色值或坐标\n\n示例: color {parts[0]} 72C0FF\n示例: color pick 1490,532 (需要引用图片)")
                 else:
                     yield event.plain_result(f"错误：命令格式不正确\n\n正确格式: color <目标格式> <颜色值>\n示例: color rgb 72C0FF")
             else:
                 yield event.plain_result("颜色转换插件\n使用方式: color <目标格式> <颜色值>\n示例: color rgb 72C0FF\n输入 colorhelp 查看详细帮助")
             return
         
-        target_format, color_str = parts
-        target_format = target_format.lower()
+        command_type = parts[0].lower()
+        
+        # 处理pick命令
+        if command_type == 'pick':
+            if len(parts) < 2:
+                yield event.plain_result("错误：请提供坐标\n\n格式: color pick x,y\n示例: color pick 1490,532 (需要引用图片)")
+                return
+            
+            coord_str = parts[1]
+            
+            # 获取图片
+            image_bytes = await self._get_image_from_event(event)
+            if not image_bytes:
+                yield event.plain_result("错误：请引用一张图片进行取色\n\n用法: 引用一张图片并发送 color pick x,y\n示例: 引用图片后发送 color pick 1490,532")
+                return
+            
+            # 取色
+            color_info, error_msg = await self._pick_color_from_image(image_bytes, coord_str)
+            if error_msg:
+                yield event.plain_result(error_msg)
+                return
+            
+            # 格式化输出
+            output = self._format_pick_output(color_info)
+            yield event.plain_result(output)
+            return
+        
+        # 处理传统的颜色转换命令
+        if len(parts) < 3:
+            if command_type in ['rgb', 'hex', 'cmyk']:
+                yield event.plain_result(f"错误：请提供颜色值\n\n示例: color {command_type} 72C0FF")
+            else:
+                yield event.plain_result(f"错误：命令格式不正确\n\n正确格式: color <目标格式> <颜色值>\n示例: color rgb 72C0FF")
+            return
+        
+        target_format, color_str = command_type, parts[1]
         
         # 验证目标格式
         if target_format not in ['rgb', 'hex', 'cmyk']:
@@ -540,3 +731,6 @@ class ColorConverterPlugin(Star):
     async def terminate(self):
         """清理资源"""
         logger.info("颜色转换插件正在关闭...")
+        if self.session:
+            await self.session.close()
+            logger.info("HTTP会话已关闭")
