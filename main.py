@@ -12,7 +12,7 @@ from astrbot.api.message_components import Reply, Image as ImgComponent
     "ColorConverter",
     "CecilyGao",
     "实现RGB、CMYK、16进制颜色值的相互转换，以及图片取色功能",
-    "1.1.0",
+    "1.0.1",
     "https://github.com/CecilyGao/astrbot_plugin_color_converter"
 )
 class ColorConverterPlugin(Star):
@@ -604,7 +604,7 @@ class ColorConverterPlugin(Star):
         # 颜色预览（使用文本表示）
         hex_color = color_info.get('hex', '#000000')
         output.append("")
-        output.append(f"颜色预览: {hex_color} ██████████████")
+        output.append(f"颜色预览: {hex_color}")
         
         return "\n".join(output)
     
