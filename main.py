@@ -1,3 +1,4 @@
+# main.py - 颜色转换插件完整修复版本
 import re
 import aiohttp
 from PIL import Image, ImageDraw
@@ -12,7 +13,7 @@ from astrbot.api.message_components import Reply, Image as ImgComponent
     "ColorConverter",
     "CecilyGao",
     "实现RGB、CMYK、16进制颜色值的相互转换，以及图片取色功能",
-    "1.0.1",
+    "1.0.2",
     "https://github.com/CecilyGao/astrbot_plugin_color_converter"
 )
 class ColorConverterPlugin(Star):
@@ -40,7 +41,7 @@ class ColorConverterPlugin(Star):
             "  » 示例: color hex 55,35,0,0\n\n"
             
             "【参数说明】\n"
-            " <目标格式>: 想要转换成的格式，可选值: rgb, hex, cmyk\n"
+            " <目标格式>: 想要转换成的格式，可选值: rgb hex cmyk\n"
             " <颜色值>: 现有的颜色值，支持以下格式:\n"
             "   - 16进制: 3位或6位16进制数，不需要#\n"
             "      示例: F00 (红色) 或 FF0000 (红色)\n"
@@ -682,19 +683,16 @@ class ColorConverterPlugin(Star):
             yield event.plain_result("颜色转换插件\n使用方式: color <目标格式> <颜色值>\n示例: color rgb 72C0FF\n输入 colorhelp 查看详细帮助")
             return
         
-        # 解析内容
-        parts = content.strip().split(maxsplit=2)  # 修改为maxsplit=2以支持pick命令
+        # 检查是否为pick命令
+        if 'pick' in content.lower():
+            # pick命令需要特殊处理：color pick x,y
+            parts = content.strip().split(maxsplit=2)
+        else:
+            # 普通颜色转换命令：只需要分割成2部分
+            parts = content.strip().split(maxsplit=1)
         
-        if len(parts) < 2:
-            # 只有一个参数或没有参数
-            if parts:
-                # 只有一个参数，可能是格式错误
-                if parts[0].lower() in ['rgb', 'hex', 'cmyk', 'pick']:
-                    yield event.plain_result(f"错误：请提供颜色值或坐标\n\n示例: color {parts[0]} 72C0FF\n示例: color pick 1490,532 (需要引用图片)")
-                else:
-                    yield event.plain_result(f"错误：命令格式不正确\n\n正确格式: color <目标格式> <颜色值>\n示例: color rgb 72C0FF")
-            else:
-                yield event.plain_result("颜色转换插件\n使用方式: color <目标格式> <颜色值>\n示例: color rgb 72C0FF\n输入 colorhelp 查看详细帮助")
+        if len(parts) < 1:
+            yield event.plain_result("颜色转换插件\n使用方式: color <目标格式> <颜色值>\n示例: color rgb 72C0FF\n输入 colorhelp 查看详细帮助")
             return
         
         command_type = parts[0].lower()
@@ -734,14 +732,15 @@ class ColorConverterPlugin(Star):
             return
         
         # 处理传统的颜色转换命令
-        if len(parts) < 3:
+        if len(parts) < 2:
             if command_type in ['rgb', 'hex', 'cmyk']:
                 yield event.plain_result(f"错误：请提供颜色值\n\n示例: color {command_type} 72C0FF")
             else:
                 yield event.plain_result(f"错误：命令格式不正确\n\n正确格式: color <目标格式> <颜色值>\n示例: color rgb 72C0FF")
             return
         
-        target_format, color_str = command_type, parts[1]
+        target_format = command_type
+        color_str = parts[1]
         
         # 验证目标格式
         if target_format not in ['rgb', 'hex', 'cmyk']:
