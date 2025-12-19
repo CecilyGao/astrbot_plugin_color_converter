@@ -54,3 +54,6 @@ requirements.txt还没弄，等我有时间搞一下
 ---
 ## 帮助命令
 `/colorhelp` - 显示此帮助信息
+
+# :speech_balloon: 支持平台
+理论支持QQ平台，目前仅测试了napcat，因为我只有这一个平台的实例。
