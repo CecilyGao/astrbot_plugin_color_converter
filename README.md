@@ -18,7 +18,7 @@ git clone https://github.com/CecilyGao/astrbot_plugin_color_converter
 
 本插件需要：
 - aiohttp>=3.8.0
-- pillow>=12.0.0
+- pillow>=10.0.0
 
 手动安装依赖：pip install aiohttp; pip install pillow
 
