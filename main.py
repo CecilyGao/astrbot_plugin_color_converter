@@ -10,11 +10,11 @@ import astrbot.api.message_components as Comp
 from astrbot.api.message_components import Reply, Image as ImgComponent
 
 @register(
-    "ColorConverter",
+    "Color",
     "CecilyGao",
     "实现RGB、CMYK、16进制颜色值的相互转换，以及图片取色功能",
     "1.0.2",
-    "https://github.com/CecilyGao/astrbot_plugin_color_converter"
+    "https://github.com/CecilyGao/astrbot_plugin_color"
 )
 class ColorConverterPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
