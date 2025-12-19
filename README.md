@@ -22,7 +22,9 @@ git clone https://github.com/CecilyGao/astrbot_plugin_color_converter
 
 手动安装依赖：pip install aiohttp; pip install pillow
 
-可见requirements.txt
+```bash
+pip install -r requirements.txt
+```
 
 无论使用哪种方法，插件的依赖都会在机器人下次重启时自动安装。
 
