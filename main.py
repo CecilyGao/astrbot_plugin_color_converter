@@ -1,4 +1,4 @@
-# main.py - 颜色转换插件完整修复版本
+# main.py - 颜色转换插件完整修复版本（添加色板分析功能）
 import re
 import aiohttp
 from PIL import Image, ImageDraw
@@ -13,7 +13,7 @@ from astrbot.api.message_components import Reply, Image as ImgComponent
     "Color",
     "CecilyGao",
     "实现RGB、CMYK、16进制颜色值的相互转换，以及图片取色功能",
-    "1.0.2",
+    "1.0.3",  # 更新版本号
     "https://github.com/CecilyGao/astrbot_plugin_color"
 )
 class ColorConverterPlugin(Star):
@@ -32,10 +32,11 @@ class ColorConverterPlugin(Star):
         # 加载配置
         self._load_config()
         
-        # 更新帮助信息，包含取色器功能
+        # 更新帮助信息，包含取色器和色板分析功能
         self.help_text = (
             "=== 颜色值转换插件帮助 ===\n"
-            "【命令格式】color <目标格式> <颜色值>\n"
+            "【颜色转换命令】\n"
+            "格式: color <目标格式> <颜色值>\n"
             "  » 示例: color rgb 72C0FF\n"
             "  » 示例: color cmyk 114,166,255\n"
             "  » 示例: color hex 55,35,0,0\n\n"
@@ -51,10 +52,17 @@ class ColorConverterPlugin(Star):
             "      示例: 0,100,100,0 (红色)\n\n"
             
             "【取色器命令】\n"
-            "命令格式: color pick <坐标> （需要引用一张图片）\n"
-            "  » 示例: （引用一张3840*2160图片）color pick 1490,532\n"
+            "格式: color pick <坐标> （需要引用一张图片）\n"
+            "  » 示例: （引用图片）color pick 1490,532\n"
             "  说明: 引用一张图片，回复该图片上指定坐标(x,y)的颜色值\n"
             "  坐标格式: x,y (例如: 1490,532)\n\n"
+            
+            "【色板分析命令】\n"
+            "格式: color analyze [颜色数量] （需要引用一张图片）\n"
+            "  » 示例: （引用图片）color analyze\n"
+            "  » 示例: （引用图片）color analyze 8\n"
+            "  说明: 分析图片中的主要颜色，生成色板\n"
+            "  颜色数量: 可选，默认5种，范围1-10\n\n"
             
             "【帮助命令】colorhelp：显示此帮助信息"
         )
@@ -142,6 +150,70 @@ class ColorConverterPlugin(Star):
             fill=(255, 255, 255) if (r*0.299 + g*0.587 + b*0.114) < 128 else (0, 0, 0),
             anchor="mm"
         )
+        
+        # 转换为BytesIO
+        bio = BytesIO()
+        image.save(bio, format='PNG')
+        bio.seek(0)
+        return bio
+    
+    def _create_color_palette_image(self, colors: list, percentages: list) -> BytesIO:
+        """创建色板预览图"""
+        # 参数检查
+        if not colors or not percentages or len(colors) != len(percentages):
+            raise ValueError("颜色列表和百分比列表必须长度相同且不为空")
+        
+        # 色板参数
+        num_colors = len(colors)
+        color_height = 80  # 每个颜色块的高度
+        padding = 10
+        text_height = 30  # 文字区域高度
+        text_padding = 5
+        
+        # 计算图片尺寸
+        image_width = num_colors * color_height + (num_colors + 1) * padding
+        image_height = color_height + text_height + padding
+        
+        # 创建新图片
+        image = Image.new('RGB', (image_width, image_height), (255, 255, 255))
+        draw = ImageDraw.Draw(image)
+        
+        # 绘制每个颜色块
+        for i, (color, percentage) in enumerate(zip(colors, percentages)):
+            # 颜色块位置
+            x1 = padding + i * (color_height + padding)
+            y1 = padding
+            x2 = x1 + color_height
+            y2 = y1 + color_height
+            
+            # 绘制颜色块
+            draw.rectangle([x1, y1, x2, y2], fill=color)
+            
+            # 绘制边框
+            draw.rectangle([x1, y1, x2, y2], outline=(200, 200, 200), width=2)
+            
+            # 计算文字颜色（根据背景色自动选择黑色或白色）
+            r, g, b = color
+            text_color = (255, 255, 255) if (r*0.299 + g*0.587 + b*0.114) < 128 else (0, 0, 0)
+            
+            # 绘制16进制值
+            hex_text = f"#{r:02x}{g:02x}{b:02x}".upper()
+            draw.text(
+                (x1 + color_height // 2, y1 + color_height // 2),
+                hex_text,
+                fill=text_color,
+                anchor="mm"
+            )
+            
+            # 绘制百分比
+            percent_text = f"{percentage:.1f}%"
+            text_y = y2 + text_padding
+            draw.text(
+                (x1 + color_height // 2, text_y + text_height // 2),
+                percent_text,
+                fill=(0, 0, 0),
+                anchor="mm"
+            )
         
         # 转换为BytesIO
         bio = BytesIO()
@@ -608,6 +680,94 @@ class ColorConverterPlugin(Star):
             logger.error(f"取色时发生错误: {e}", exc_info=True)
             return {}, f"取色时发生错误: {str(e)}"
     
+    async def _analyze_image_palette(self, image_bytes: bytes, num_colors: int = 5) -> tuple[list, list, tuple, str]:
+        """
+        分析图片色板，找出比例最高的几种颜色
+        返回: (颜色列表, 百分比列表, 图片尺寸, 错误信息)
+        """
+        try:
+            # 加载图片
+            image = Image.open(BytesIO(image_bytes)).convert('RGB')
+            width, height = image.size
+            total_pixels = width * height
+            
+            # 如果图片太大，缩小以加快处理速度
+            max_dimension = 400
+            if width > max_dimension or height > max_dimension:
+                scale = max_dimension / max(width, height)
+                new_width = int(width * scale)
+                new_height = int(height * scale)
+                image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                width, height = image.size
+                total_pixels = width * height
+            
+            # 获取所有像素
+            pixels = list(image.getdata())
+            
+            # 使用颜色量化来合并相似颜色
+            # 将颜色空间划分为8x8x8的立方体 (512个颜色组)
+            color_dict = {}
+            
+            for r, g, b in pixels:
+                # 量化到较低精度 (每通道8级)
+                r_idx = r // 32  # 0-7
+                g_idx = g // 32  # 0-7
+                b_idx = b // 32  # 0-7
+                
+                # 使用量化后的颜色作为键
+                color_key = (r_idx, g_idx, b_idx)
+                
+                if color_key not in color_dict:
+                    color_dict[color_key] = {
+                        'count': 0,
+                        'r_sum': 0,
+                        'g_sum': 0,
+                        'b_sum': 0
+                    }
+                
+                # 累加计数和颜色值
+                color_dict[color_key]['count'] += 1
+                color_dict[color_key]['r_sum'] += r
+                color_dict[color_key]['g_sum'] += g
+                color_dict[color_key]['b_sum'] += b
+            
+            # 如果没有颜色数据
+            if not color_dict:
+                return [], [], (width, height), "无法分析图片颜色"
+            
+            # 计算每个颜色组的平均颜色和百分比
+            color_list = []
+            for color_key, data in color_dict.items():
+                count = data['count']
+                avg_r = data['r_sum'] // count
+                avg_g = data['g_sum'] // count
+                avg_b = data['b_sum'] // count
+                
+                percentage = (count / total_pixels) * 100
+                
+                color_list.append({
+                    'rgb': (avg_r, avg_g, avg_b),
+                    'percentage': percentage,
+                    'count': count
+                })
+            
+            # 按百分比降序排序
+            color_list.sort(key=lambda x: x['percentage'], reverse=True)
+            
+            # 限制返回的颜色数量
+            num_colors = max(1, min(num_colors, 10))  # 限制在1-10之间
+            top_colors = color_list[:num_colors]
+            
+            # 提取RGB颜色和百分比
+            rgb_colors = [color['rgb'] for color in top_colors]
+            percentages = [color['percentage'] for color in top_colors]
+            
+            return rgb_colors, percentages, (width, height), ""
+            
+        except Exception as e:
+            logger.error(f"分析色板时发生错误: {e}", exc_info=True)
+            return [], [], (0, 0), f"分析色板时发生错误: {str(e)}"
+    
     def _format_pick_output(self, color_info: dict) -> tuple[str, BytesIO]:
         """格式化取色器输出，返回文本和预览图片"""
         output = []
@@ -636,6 +796,34 @@ class ColorConverterPlugin(Star):
         preview_image = self._create_color_preview_image(r, g, b)
         
         return "\n".join(output), preview_image
+    
+    def _format_analyze_output(self, colors: list, percentages: list, image_size: tuple) -> tuple[str, BytesIO]:
+        """格式化色板分析输出，返回文本和色板图片"""
+        output = []
+        width, height = image_size
+        
+        output.append(f"图片色板分析结果 (图片尺寸: {width}x{height})")
+        output.append(f"提取了 {len(colors)} 种主要颜色:")
+        output.append("")
+        
+        # 添加每个颜色的详细信息
+        for i, (color, percentage) in enumerate(zip(colors, percentages), 1):
+            r, g, b = color
+            hex_color, _ = self.rgb_to_hex(r, g, b)
+            cmyk, _ = self.rgb_to_cmyk(r, g, b)
+            
+            output.append(f"{i}. {hex_color}")
+            output.append(f"   RGB: ({r}, {g}, {b})")
+            output.append(f"   CMYK: ({cmyk[0]}%, {cmyk[1]}%, {cmyk[2]}%, {cmyk[3]}%)")
+            output.append(f"   占比: {percentage:.2f}%")
+            output.append("")
+        
+        output.append("以下是色板预览:")
+        
+        # 生成色板图片
+        palette_image = self._create_color_palette_image(colors, percentages)
+        
+        return "\n".join(output), palette_image
     
     @filter.command("color")
     async def color_converter(self, event: AstrMessageEvent):
@@ -683,9 +871,9 @@ class ColorConverterPlugin(Star):
             yield event.plain_result("颜色转换插件\n使用方式: color <目标格式> <颜色值>\n示例: color rgb 72C0FF\n输入 colorhelp 查看详细帮助")
             return
         
-        # 检查是否为pick命令
-        if 'pick' in content.lower():
-            # pick命令需要特殊处理：color pick x,y
+        # 检查是否为pick或analyze命令
+        if 'pick' in content.lower() or 'analyze' in content.lower():
+            # 这些命令需要特殊处理：color pick x,y 或 color analyze [数量]
             parts = content.strip().split(maxsplit=2)
         else:
             # 普通颜色转换命令：只需要分割成2部分
@@ -726,6 +914,45 @@ class ColorConverterPlugin(Star):
                 Comp.Plain(" \n"),
                 Comp.Plain("颜色预览:\n"),
                 Comp.Image.fromBytes(preview_image.getvalue())
+            ]
+            
+            yield event.chain_result(chain)
+            return
+        
+        # 处理analyze命令
+        elif command_type == 'analyze':
+            # 解析可选的颜色数量参数
+            num_colors = 5  # 默认5种颜色
+            if len(parts) > 1:
+                try:
+                    num_colors = int(parts[1])
+                    # 限制在1-10之间
+                    num_colors = max(1, min(num_colors, 10))
+                except ValueError:
+                    yield event.plain_result("错误：颜色数量必须是整数\n\n格式: color analyze [颜色数量]\n示例: color analyze 8 (默认5)")
+                    return
+            
+            # 获取图片
+            image_bytes = await self._get_image_from_event(event)
+            if not image_bytes:
+                yield event.plain_result("错误：请引用一张图片进行色板分析\n\n用法: 引用一张图片并发送 color analyze [数量]\n示例: 引用图片后发送 color analyze 8")
+                return
+            
+            # 分析色板
+            yield event.plain_result(f"正在分析图片色板，提取前 {num_colors} 种主要颜色...")
+            
+            colors, percentages, image_size, error_msg = await self._analyze_image_palette(image_bytes, num_colors)
+            if error_msg:
+                yield event.plain_result(error_msg)
+                return
+            
+            # 格式化输出并生成色板图片
+            text_output, palette_image = self._format_analyze_output(colors, percentages, image_size)
+            
+            # 使用消息链发送文本和图片
+            chain = [
+                Comp.Plain(text_output),
+                Comp.Image.fromBytes(palette_image.getvalue())
             ]
             
             yield event.chain_result(chain)
